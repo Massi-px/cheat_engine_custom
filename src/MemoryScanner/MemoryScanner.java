@@ -1,10 +1,9 @@
 package MemoryScanner;
 
 import javax.swing.*;
+import javax.swing.Timer;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -22,11 +21,25 @@ public class MemoryScanner extends JFrame {
     private JButton attachButton, scanButton, scanSpecificButton, modifyButton;
     private JList<String> processList;
     private DefaultListModel<String> processListModel;
-    private JTextField processSearchField = new JTextField(15);
-    private List<String> allProcesses = new ArrayList<>(); // Ajout de l'attribut en haut de la classe
+    private final JTextField processSearchField = new JTextField(15);
+    private final List<String> allProcesses = new ArrayList<>(); // Ajout de l'attribut en haut de la classe
+    private static final String NO_TYPE_SELECTED = "Tous les types";
 
     private int targetPid = -1;
-    private Map<Long, Integer> foundAddresses = new HashMap<>();
+    private final Map<Long, Integer> foundAddresses = new HashMap<>();
+
+    // Ajout des nouveaux attributs
+    private JButton startRecButton;
+    private JButton stopRecButton;
+    private JButton showAllButton;
+    private boolean isRecording = false;
+    private Timer recordingTimer;
+    private Map<Long, String> previousValues = new HashMap<>();
+
+    // Ajout des nouveaux attributs
+    private JTextField resultFilterField;
+    private JLabel resultCountLabel;
+    private List<Object[]> allResults = new ArrayList<>(); // Pour stocker tous les résultats non filtrés
 
     public MemoryScanner() {
         setTitle("Memory Scanner - Alternative Java à Cheat Engine");
@@ -60,7 +73,7 @@ public class MemoryScanner extends JFrame {
         newValueField.setPreferredSize(textFieldSize);
 
         // Combo box avec une taille plus grande
-        dataTypeCombo = new JComboBox<>(new String[]{"int", "float", "double", "long", "short", "byte"});
+        dataTypeCombo = new JComboBox<>(new String[]{NO_TYPE_SELECTED, "int", "float", "double", "long", "short", "byte"});
         dataTypeCombo.setFont(inputFont);
         dataTypeCombo.setPreferredSize(new Dimension(150, 30));
 
@@ -112,10 +125,33 @@ public class MemoryScanner extends JFrame {
         leftPanel.add(new JLabel("Processus actifs:"), BorderLayout.CENTER);
         leftPanel.add(new JScrollPane(processList), BorderLayout.CENTER);
         JButton refreshButton = new JButton("Actualiser");
-        refreshButton.addActionListener(e -> refreshProcessList());
+        refreshButton.addActionListener(_ -> refreshProcessList());
         leftPanel.add(refreshButton, BorderLayout.SOUTH);
         leftPanel.setPreferredSize(new Dimension(250, 0));
 
+        // Ajout des nouveaux boutons
+        startRecButton = new JButton("Démarrer l'enregistrement");
+        startRecButton.setFont(buttonFont);
+        
+        stopRecButton = new JButton("Arrêter l'enregistrement");
+        stopRecButton.setFont(buttonFont);
+        stopRecButton.setEnabled(false);
+        
+        showAllButton = new JButton("Afficher toutes les valeurs");
+        showAllButton.setFont(buttonFont);
+        showAllButton.setEnabled(false);
+
+        // Création du timer pour le mode enregistrement (refresh toutes les 500ms)
+        recordingTimer = new Timer(500, e -> checkForChanges());
+
+        // Création du champ de filtrage des résultats
+        resultFilterField = new JTextField(15);
+        resultFilterField.setFont(inputFont);
+        resultFilterField.setPreferredSize(textFieldSize);
+        
+        // Label pour afficher le nombre de résultats
+        resultCountLabel = new JLabel("0 résultats");
+        resultCountLabel.setFont(inputFont);
     }
 
     private void layoutComponents() {
@@ -152,6 +188,15 @@ public class MemoryScanner extends JFrame {
         gbc.gridx = 2;
         controlPanel.add(modifyButton, gbc);
 
+        // Ajout des boutons d'enregistrement dans le panel de contrôle
+        gbc.gridx = 0; gbc.gridy = 3;
+        gbc.gridwidth = 1;
+        controlPanel.add(startRecButton, gbc);
+        gbc.gridx = 1;
+        controlPanel.add(stopRecButton, gbc);
+        gbc.gridx = 2;
+        controlPanel.add(showAllButton, gbc);
+
         // Panel central avec split
         JSplitPane centerSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
 
@@ -175,13 +220,20 @@ public class MemoryScanner extends JFrame {
         leftPanel.add(listPanel, BorderLayout.CENTER);
         
         JButton refreshButton = new JButton("Actualiser");
-        refreshButton.addActionListener(e -> refreshProcessList());
+        refreshButton.addActionListener(_ -> refreshProcessList());
         leftPanel.add(refreshButton, BorderLayout.SOUTH);
         leftPanel.setPreferredSize(new Dimension(250, 0));
 
-        // Panel droit - Résultats
+        // Panel droit - Résultats avec filtrage
         JPanel rightPanel = new JPanel(new BorderLayout());
-        rightPanel.add(new JLabel("Résultats du scan:"), BorderLayout.NORTH);
+        
+        // Panel pour le filtre et le compteur
+        JPanel filterPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        filterPanel.add(new JLabel("Filtrer les résultats:"));
+        filterPanel.add(resultFilterField);
+        filterPanel.add(resultCountLabel);
+        
+        rightPanel.add(filterPanel, BorderLayout.NORTH);
         rightPanel.add(new JScrollPane(resultsTable), BorderLayout.CENTER);
 
         centerSplit.setLeftComponent(leftPanel);
@@ -197,38 +249,22 @@ public class MemoryScanner extends JFrame {
     }
 
     private void setupEventHandlers() {
-        attachButton.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                attachToProcess();
-            }
+        attachButton.addActionListener(_ -> attachToProcess());
+
+        scanButton.addActionListener(_ -> {
+            searchValueField.setText(""); // Vider le champ pour scanner toutes les valeurs
+            scanMemory();
         });
 
-        scanButton.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                searchValueField.setText(""); // Vider le champ pour scanner toutes les valeurs
-                scanMemory();
+        scanSpecificButton.addActionListener(_ -> {
+            if (searchValueField.getText().trim().isEmpty()) {
+                log("Veuillez entrer une valeur à rechercher pour le scan spécifique");
+                return;
             }
+            scanMemory();
         });
 
-        scanSpecificButton.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                if (searchValueField.getText().trim().isEmpty()) {
-                    log("Veuillez entrer une valeur à rechercher pour le scan spécifique");
-                    return;
-                }
-                scanMemory();
-            }
-        });
-
-        modifyButton.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                modifyMemory();
-            }
-        });
+        modifyButton.addActionListener(_ -> modifyMemory());
 
         processList.addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting()) {
@@ -250,6 +286,24 @@ public class MemoryScanner extends JFrame {
             }
             public void insertUpdate(javax.swing.event.DocumentEvent e) {
                 filterProcessList();
+            }
+        });
+
+        // Gestionnaires d'événements pour les nouveaux boutons
+        startRecButton.addActionListener(e -> startRecording());
+        stopRecButton.addActionListener(e -> stopRecording());
+        showAllButton.addActionListener(e -> showAllValues());
+
+        // Gestionnaire d'événements pour le filtre des résultats
+        resultFilterField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            public void changedUpdate(javax.swing.event.DocumentEvent e) {
+                filterResults();
+            }
+            public void removeUpdate(javax.swing.event.DocumentEvent e) {
+                filterResults();
+            }
+            public void insertUpdate(javax.swing.event.DocumentEvent e) {
+                filterResults();
             }
         });
     }
@@ -318,6 +372,55 @@ public class MemoryScanner extends JFrame {
         }
     }
 
+    private void scanAllValuesInRegion(MemoryRegion region, String dataType) {
+        try {
+            File memFile = new File("/proc/" + targetPid + "/mem");
+            if (!memFile.canRead()) {
+                return;
+            }
+
+            log("Scan complet de la région: " + region.toString());
+
+            if (dataType.equals(NO_TYPE_SELECTED)) {
+                // Scanner pour tous les types
+                for (String type : new String[]{"int", "float", "double", "long", "short", "byte"}) {
+                    scanForType(region, type);
+                }
+            } else {
+                // Scanner pour le type spécifique
+                scanForType(region, dataType);
+            }
+
+        } catch (Exception e) {
+            log("Erreur dans la région " + region + ": " + e.getMessage());
+        }
+    }
+
+    private void scanForType(MemoryRegion region, String dataType) {
+        // Simulation d'un scan pour un type spécifique
+        int numValues = Math.min(10, (int)((region.end - region.start) / getDataTypeSize(dataType)));
+
+        for (int i = 0; i < numValues; i++) {
+            long address = region.start + ((long) i * getDataTypeSize(dataType));
+            String simulatedValue = generateSimulatedValue(dataType);
+
+            try {
+                // Pour la simulation, on stocke seulement la partie entière
+                foundAddresses.put(address, Integer.parseInt(simulatedValue.split("\\.")[0]));
+
+                Object[] row = {
+                        String.format("0x%X", address),
+                        simulatedValue,
+                        dataType
+                };
+                addResultRow(row);
+            } catch (NumberFormatException e) {
+                // Ignorer les erreurs de parsing pour les valeurs non-entières
+                foundAddresses.put(address, 0);
+            }
+        }
+    }
+
     private void scanMemory() {
         if (targetPid == -1) {
             log("Aucun processus attaché");
@@ -328,14 +431,24 @@ public class MemoryScanner extends JFrame {
         String dataType = (String) dataTypeCombo.getSelectedItem();
 
         if (searchValue.isEmpty()) {
-            log("Scan de toutes les valeurs en cours (type: " + dataType + ")");
+            if (dataType.equals(NO_TYPE_SELECTED)) {
+                log("Scan de toutes les valeurs pour tous les types");
+            } else {
+                log("Scan de toutes les valeurs en cours (type: " + dataType + ")");
+            }
         } else {
+            assert dataType != null;
+            if (dataType.equals(NO_TYPE_SELECTED)) {
+                log("Pour une recherche de valeur spécifique, veuillez sélectionner un type");
+                return;
+            }
             log("Scan en cours pour la valeur: " + searchValue + " (type: " + dataType + ")");
         }
 
         // Nettoyer les résultats précédents
         tableModel.setRowCount(0);
         foundAddresses.clear();
+        allResults.clear(); // Nettoyer la liste complète des résultats
 
         try {
             List<MemoryRegion> regions = getMemoryRegions(targetPid);
@@ -352,41 +465,10 @@ public class MemoryScanner extends JFrame {
             }
 
             log("Scan terminé. " + foundAddresses.size() + " résultats trouvés");
+            updateResultCount();
 
         } catch (Exception e) {
             log("Erreur lors du scan: " + e.getMessage());
-        }
-    }
-
-    private void scanAllValuesInRegion(MemoryRegion region, String dataType) {
-        try {
-            File memFile = new File("/proc/" + targetPid + "/mem");
-            if (!memFile.canRead()) {
-                return;
-            }
-
-            log("Scan complet de la région: " + region.toString());
-
-            // Simulation d'un scan complet (en réalité, il faudrait lire le contenu réel)
-            // On génère des valeurs simulées pour démonstration
-            int numValues = Math.min(50, (int)((region.end - region.start) / getDataTypeSize(dataType)));
-
-            for (int i = 0; i < numValues; i++) {
-                long address = region.start + (i * getDataTypeSize(dataType));
-                String simulatedValue = generateSimulatedValue(dataType);
-
-                foundAddresses.put(address, Integer.parseInt(simulatedValue.split("\\.")[0]));
-
-                Object[] row = {
-                        String.format("0x%X", address),
-                        simulatedValue,
-                        dataType
-                };
-                tableModel.addRow(row);
-            }
-
-        } catch (Exception e) {
-            log("Erreur dans la région " + region + ": " + e.getMessage());
         }
     }
 
@@ -409,7 +491,7 @@ public class MemoryScanner extends JFrame {
                         searchValue,
                         dataType
                 };
-                tableModel.addRow(row);
+                addResultRow(row);
             }
 
         } catch (Exception e) {
@@ -419,32 +501,24 @@ public class MemoryScanner extends JFrame {
 
     private String generateSimulatedValue(String dataType) {
         Random random = new Random();
-        switch (dataType.toLowerCase()) {
-            case "int":
-                return String.valueOf(random.nextInt(1000));
-            case "float":
-                return String.format("%.2f", random.nextFloat() * 1000);
-            case "double":
-                return String.format("%.4f", random.nextDouble() * 1000);
-            case "long":
-                return String.valueOf(random.nextLong() % 10000);
-            case "short":
-                return String.valueOf((short)(random.nextInt(Short.MAX_VALUE)));
-            case "byte":
-                return String.valueOf((byte)(random.nextInt(256) - 128));
-            default:
-                return String.valueOf(random.nextInt(100));
-        }
+        return switch (dataType.toLowerCase()) {
+            case "int" -> String.valueOf(random.nextInt(1000));
+            case "float" -> String.format("%.2f", random.nextFloat() * 1000);
+            case "double" -> String.format("%.4f", random.nextDouble() * 1000);
+            case "long" -> String.valueOf(random.nextLong() % 10000);
+            case "short" -> String.valueOf((short) (random.nextInt(Short.MAX_VALUE)));
+            case "byte" -> String.valueOf((byte) (random.nextInt(256) - 128));
+            default -> String.valueOf(random.nextInt(100));
+        };
     }
 
     private int getDataTypeSize(String dataType) {
-        switch (dataType.toLowerCase()) {
-            case "byte": return 1;
-            case "short": return 2;
-            case "int": case "float": return 4;
-            case "long": case "double": return 8;
-            default: return 4;
-        }
+        return switch (dataType.toLowerCase()) {
+            case "byte" -> 1;
+            case "short" -> 2;
+            case "long", "double" -> 8;
+            default -> 4;
+        };
     }
 
     private void modifyMemory() {
@@ -539,5 +613,149 @@ public class MemoryScanner extends JFrame {
         public String toString() {
             return String.format("0x%X-0x%X %s %s", start, end, permissions, pathname);
         }
+    }
+
+    private void startRecording() {
+        if (foundAddresses.isEmpty()) {
+            log("Veuillez d'abord effectuer un scan pour avoir des valeurs à surveiller");
+            return;
+        }
+
+        isRecording = true;
+        startRecButton.setEnabled(false);
+        stopRecButton.setEnabled(true);
+        showAllButton.setEnabled(false);
+
+        // Sauvegarder les valeurs actuelles
+        saveCurrentValues();
+
+        // Démarrer le timer
+        recordingTimer.start();
+        log("Mode enregistrement activé - Surveillance des changements...");
+    }
+
+    private void stopRecording() {
+        isRecording = false;
+        recordingTimer.stop();
+        startRecButton.setEnabled(true);
+        stopRecButton.setEnabled(false);
+        showAllButton.setEnabled(true);
+        log("Mode enregistrement désactivé");
+    }
+
+    private void showAllValues() {
+        allResults.clear();
+        for (Map.Entry<Long, Integer> entry : foundAddresses.entrySet()) {
+            String type = getTypeForAddress(entry.getKey());
+            String value = generateSimulatedValue(type);
+            
+            Object[] row = {
+                String.format("0x%X", entry.getKey()),
+                value,
+                type
+            };
+            allResults.add(row.clone());
+        }
+        
+        filterResults();
+        log("Affichage de toutes les valeurs restauré");
+    }
+
+    private void saveCurrentValues() {
+        previousValues.clear();
+        for (int i = 0; i < tableModel.getRowCount(); i++) {
+            String address = (String) tableModel.getValueAt(i, 0);
+            String value = (String) tableModel.getValueAt(i, 1);
+            previousValues.put(Long.parseLong(address.substring(2), 16), value);
+        }
+    }
+
+    private void checkForChanges() {
+        if (!isRecording) return;
+
+        // Sauvegarder les valeurs actuelles de la table pour comparaison
+        Map<Long, String> currentValues = new HashMap<>();
+        Map<Long, String> changedValues = new HashMap<>();
+
+        // Simuler la lecture des nouvelles valeurs et détecter les changements
+        for (Map.Entry<Long, String> entry : previousValues.entrySet()) {
+            long address = entry.getKey();
+            String type = getTypeForAddress(address);
+            String newValue = generateSimulatedValue(type); // Dans un cas réel, lire la vraie valeur
+            currentValues.put(address, newValue);
+
+            // Si la valeur a changé, l'ajouter à la liste des changements
+            if (!newValue.equals(entry.getValue())) {
+                changedValues.put(address, newValue);
+            }
+        }
+
+        // Mettre à jour allResults avec les nouvelles valeurs
+        allResults.clear();
+        for (Map.Entry<Long, String> entry : changedValues.entrySet()) {
+            Object[] row = {
+                String.format("0x%X", entry.getKey()),
+                entry.getValue(),
+                getTypeForAddress(entry.getKey())
+            };
+            allResults.add(row.clone());
+        }
+
+        // Appliquer le filtre actuel
+        filterResults();
+    }
+
+    private String getTypeForAddress(long address) {
+        // Cette méthode devrait retourner le type associé à l'adresse
+        // Pour l'exemple, on retourne un type aléatoire
+        String[] types = {"int", "float", "double", "long", "short", "byte"};
+        return types[new Random().nextInt(types.length)];
+    }
+
+    private void filterResults() {
+        String filterText = resultFilterField.getText().toLowerCase().trim();
+        
+        // Si le filtre est vide, afficher tous les résultats
+        if (filterText.isEmpty()) {
+            tableModel.setRowCount(0);
+            for (Object[] row : allResults) {
+                tableModel.addRow(row);
+            }
+            updateResultCount();
+            return;
+        }
+
+        // Appliquer le filtre
+        tableModel.setRowCount(0);
+        for (Object[] row : allResults) {
+            String address = row[0].toString().toLowerCase();
+            String value = row[1].toString().toLowerCase();
+            String type = row[2].toString().toLowerCase();
+
+            if (address.contains(filterText) || 
+                value.contains(filterText) || 
+                type.contains(filterText)) {
+                tableModel.addRow(row);
+            }
+        }
+        
+        updateResultCount();
+    }
+
+    private void updateResultCount() {
+        int count = tableModel.getRowCount();
+        int totalCount = allResults.size();
+        if (count == totalCount) {
+            resultCountLabel.setText(count + " résultats");
+        } else {
+            resultCountLabel.setText(count + " sur " + totalCount + " résultats");
+        }
+    }
+
+    // Modifier la méthode qui ajoute des résultats au tableau
+    private void addResultRow(Object[] row) {
+        allResults.add(row.clone()); // Sauvegarder une copie dans la liste complète
+        tableModel.addRow(row);
+        updateResultCount();
     }
 }

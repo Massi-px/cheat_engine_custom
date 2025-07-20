@@ -22,6 +22,8 @@ public class MemoryScanner extends JFrame {
     private JButton attachButton, scanButton, scanSpecificButton, modifyButton;
     private JList<String> processList;
     private DefaultListModel<String> processListModel;
+    private JTextField processSearchField = new JTextField(15);
+    private List<String> allProcesses = new ArrayList<>(); // Ajout de l'attribut en haut de la classe
 
     private int targetPid = -1;
     private Map<Long, Integer> foundAddresses = new HashMap<>();
@@ -41,36 +43,79 @@ public class MemoryScanner extends JFrame {
     }
 
     private void initializeComponents() {
-        // Champs de saisie
+        // Champs de saisie avec une taille de police plus grande
+        Font inputFont = new Font(Font.SANS_SERIF, Font.PLAIN, 14);
+        Dimension textFieldSize = new Dimension(200, 30);
+        
         pidField = new JTextField(10);
+        pidField.setFont(inputFont);
+        pidField.setPreferredSize(textFieldSize);
+        
         searchValueField = new JTextField(15);
+        searchValueField.setFont(inputFont);
+        searchValueField.setPreferredSize(textFieldSize);
+        
         newValueField = new JTextField(15);
+        newValueField.setFont(inputFont);
+        newValueField.setPreferredSize(textFieldSize);
 
-        // Combo box pour types de données
+        // Combo box avec une taille plus grande
         dataTypeCombo = new JComboBox<>(new String[]{"int", "float", "double", "long", "short", "byte"});
+        dataTypeCombo.setFont(inputFont);
+        dataTypeCombo.setPreferredSize(new Dimension(150, 30));
 
         // Boutons
+        Font buttonFont = new Font(Font.SANS_SERIF, Font.PLAIN, 14);
         attachButton = new JButton("Attacher au processus");
+        attachButton.setFont(buttonFont);
+        
         scanButton = new JButton("Scanner toutes les valeurs");
+        scanButton.setFont(buttonFont);
+        
         scanSpecificButton = new JButton("Scanner valeur spécifique");
+        scanSpecificButton.setFont(buttonFont);
+        
         modifyButton = new JButton("Modifier valeur");
+        modifyButton.setFont(buttonFont);
 
         // Table des résultats
         String[] columns = {"Adresse", "Valeur", "Type"};
         tableModel = new DefaultTableModel(columns, 0);
         resultsTable = new JTable(tableModel);
+        resultsTable.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 14));
+        resultsTable.setRowHeight(25);
 
         // Liste des processus
         processListModel = new DefaultListModel<>();
         processList = new JList<>(processListModel);
-        processList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        processList.setFont(inputFont);
 
-        // Zone de log
+        // Zone de log avec une taille plus grande
         logArea = new JTextArea(10, 30);
         logArea.setEditable(false);
         logArea.setBackground(Color.BLACK);
         logArea.setForeground(Color.GREEN);
-        logArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        logArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 14));
+
+        // Panel gauche - Liste des processus
+        JPanel leftPanel = new JPanel(new BorderLayout());
+
+        // Ajout du champ de recherche pour les processus
+        processSearchField.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 14));
+        processSearchField.setPreferredSize(new Dimension(200, 30));
+        // Ajout du panel de recherche
+        JPanel searchPanel = new JPanel(new BorderLayout());
+        searchPanel.add(new JLabel("Rechercher PID:"), BorderLayout.NORTH);
+        searchPanel.add(processSearchField, BorderLayout.CENTER);
+        leftPanel.add(searchPanel, BorderLayout.NORTH);
+
+        leftPanel.add(new JLabel("Processus actifs:"), BorderLayout.CENTER);
+        leftPanel.add(new JScrollPane(processList), BorderLayout.CENTER);
+        JButton refreshButton = new JButton("Actualiser");
+        refreshButton.addActionListener(e -> refreshProcessList());
+        leftPanel.add(refreshButton, BorderLayout.SOUTH);
+        leftPanel.setPreferredSize(new Dimension(250, 0));
+
     }
 
     private void layoutComponents() {
@@ -112,8 +157,23 @@ public class MemoryScanner extends JFrame {
 
         // Panel gauche - Liste des processus
         JPanel leftPanel = new JPanel(new BorderLayout());
-        leftPanel.add(new JLabel("Processus actifs:"), BorderLayout.NORTH);
-        leftPanel.add(new JScrollPane(processList), BorderLayout.CENTER);
+        
+        // Panneau de recherche
+        JPanel searchPanel = new JPanel(new BorderLayout());
+        searchPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+        searchPanel.add(new JLabel("Rechercher PID:"), BorderLayout.NORTH);
+        searchPanel.add(processSearchField, BorderLayout.CENTER);
+        
+        // Panel pour la liste et son titre
+        JPanel listPanel = new JPanel(new BorderLayout());
+        listPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+        listPanel.add(new JLabel("Processus actifs:"), BorderLayout.NORTH);
+        listPanel.add(new JScrollPane(processList), BorderLayout.CENTER);
+        
+        // Assemblage du panel gauche
+        leftPanel.add(searchPanel, BorderLayout.NORTH);
+        leftPanel.add(listPanel, BorderLayout.CENTER);
+        
         JButton refreshButton = new JButton("Actualiser");
         refreshButton.addActionListener(e -> refreshProcessList());
         leftPanel.add(refreshButton, BorderLayout.SOUTH);
@@ -179,10 +239,24 @@ public class MemoryScanner extends JFrame {
                 }
             }
         });
+
+        // Ajout du gestionnaire d'événements pour le champ de recherche
+        processSearchField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            public void changedUpdate(javax.swing.event.DocumentEvent e) {
+                filterProcessList();
+            }
+            public void removeUpdate(javax.swing.event.DocumentEvent e) {
+                filterProcessList();
+            }
+            public void insertUpdate(javax.swing.event.DocumentEvent e) {
+                filterProcessList();
+            }
+        });
     }
 
     private void refreshProcessList() {
         processListModel.clear();
+        allProcesses.clear();
         try {
             Process proc = Runtime.getRuntime().exec("ps -eo pid,comm --no-headers");
             BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()));
@@ -191,6 +265,8 @@ public class MemoryScanner extends JFrame {
                 line = line.trim();
                 if (!line.isEmpty()) {
                     processListModel.addElement(line);
+                    allProcesses.add(line); // Ajouter à la liste complète
+
                 }
             }
             log("Liste des processus actualisée");
@@ -198,6 +274,25 @@ public class MemoryScanner extends JFrame {
             log("Erreur lors de l'actualisation: " + e.getMessage());
         }
     }
+
+    private void filterProcessList() {
+        processListModel.clear();
+        String searchText = processSearchField.getText().trim();
+
+        for (String process : allProcesses) {
+            String pid = process.split("\\s+")[0];
+            if (searchText.isEmpty() || pid.startsWith(searchText)) {
+                processListModel.addElement(process);
+            }
+        }
+
+
+        // Si aucun résultat n'est trouvé, afficher un message dans la liste
+        if (processListModel.isEmpty() && !searchText.isEmpty()) {
+            processListModel.addElement("Aucun processus trouvé avec ce PID");
+        }
+    }
+
 
     private void attachToProcess() {
         String pidText = pidField.getText().trim();
